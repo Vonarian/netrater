@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"strings"
 )
 
 // Executor applies bandwidth changes to the Linux tc subsystem.
@@ -20,75 +19,24 @@ func NewExecutor(iface, classID string) *Executor {
 	}
 }
 
-// Setup initializes the root qdisc on the interface if it doesn't already exist.
+// Setup verifies that the network interface exists.
+// In passive mode, it does NOT initialize or modify the HTB hierarchy.
 func (e *Executor) Setup() error {
-	// 1. Delete existing root qdisc to clear old state. Ignore errors as it may not exist.
-	exec.Command("tc", "qdisc", "del", "dev", e.iface, "root").Run()
-
-	// Parse default class from e.classID (e.g., "1:1" -> "1").
-	parts := strings.Split(e.classID, ":")
-	defaultClass := "1"
-	if len(parts) == 2 {
-		defaultClass = parts[1]
-	}
-
-	// 2. Add root qdisc, defaulting traffic to the configured class.
-	cmd := exec.Command("tc", "qdisc", "add",
-		"dev", e.iface,
-		"root", "handle", "1:",
-		"htb", "default", defaultClass,
-	)
+	// Verify interface exists
+	cmd := exec.Command("ip", "link", "show", "dev", e.iface)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("[EXECUTOR] Failed to setup root qdisc: %v | output: %s", err, string(out))
-		return fmt.Errorf("tc qdisc add failed: %w", err)
+		log.Printf("[EXECUTOR] Interface %s not found: %v | output: %s", e.iface, err, string(out))
+		return fmt.Errorf("interface check failed: %w", err)
 	}
 
-	// 3. Create an unshaped class (1:10) for local network traffic bypass
-	bypassClassFunc := func() error {
-		cmd = exec.Command("tc", "class", "add",
-			"dev", e.iface,
-			"parent", "1:",
-			"classid", "1:10",
-			"htb", "rate", "1000mbit",
-		)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			log.Printf("[EXECUTOR] Failed to create local bypass class: %v | output: %s", err, string(out))
-			return fmt.Errorf("tc class add failed: %w", err)
-		}
-
-		// 4. Route local subnets to the bypass class
-		subnets := []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"}
-		for _, subnet := range subnets {
-			cmd := exec.Command("tc", "filter", "add",
-				"dev", e.iface,
-				"protocol", "ip",
-				"parent", "1:",
-				"prio", "1",
-				"u32", "match", "ip", "dst", subnet,
-				"flowid", "1:10",
-			)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				log.Printf("[EXECUTOR] Failed to add filter for %s: %v | output: %s", subnet, err, string(out))
-			}
-		}
-		return nil
-	}
-
-	if err := bypassClassFunc(); err != nil {
-		// Log but do not fail completely, as the main rate limiter can still function
-		log.Printf("[EXECUTOR] Local network bypass setup failed, local traffic will be limited.")
-	}
-
-	log.Printf("[EXECUTOR] Initialized HTB root qdisc on %s with local traffic bypass", e.iface)
+	log.Printf("[EXECUTOR] Passive mode: interface %s verified. Expecting class %s to be managed externally.", e.iface, e.classID)
 	return nil
 }
 
 // Apply changes the HTB class rate to the given value in kbps.
 func (e *Executor) Apply(rateKbps int) error {
-	// Add burst/cburst for smoother behavior at low rates
-	// burst = rate / hz, but roughly 15k is common for 100Mbit.
-	// For AIMD, we want small but existing bursts.
+	// We use 'replace' to update the existing class.
+	// This assumes the class (configured as 1:1 in main.go) was created by setup-qos.sh.
 	cmd := exec.Command("tc", "class", "replace",
 		"dev", e.iface,
 		"parent", "1:",

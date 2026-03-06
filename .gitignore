@@ -25,3 +25,7 @@ vendor/
 *.swp
 *.swo
 *~
+
+# Temp files
+*.tmp
+*.fcc
