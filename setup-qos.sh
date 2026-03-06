@@ -32,14 +32,20 @@ tc qdisc add dev $WIFI_5G root handle 1: htb default 30
 # LAN Bypass (Class 1:10) - Pure Gigabit, bypasses NetRater throttle
 tc class add dev $WIFI_5G parent 1: classid 1:10 htb rate 1000mbit prio 0
 
-# THE THROTTLE (Class 1:1) - Controlled by NetRater (1-7 Mbps)
-tc class add dev $WIFI_5G parent 1: classid 1:1 htb rate 4mbit
+# THE THROTTLE PARENT (Class 1:1) - Controlled by NetRater (e.g., 2 * BaseRate)
+tc class add dev $WIFI_5G parent 1: classid 1:1 htb rate 8mbit
 
-# VIP SUB-CLASS (Class 1:20) - Nested inside 1:1, Priority 1
-tc class add dev $WIFI_5G parent 1:1 classid 1:20 htb rate 100kbit ceil 7mbit prio 1
+# VIP SUB-CLASS (Class 1:20) - Nested inside 1:1, Priority 1, 2x Ceil
+tc class add dev $WIFI_5G parent 1:1 classid 1:20 htb rate 4mbit ceil 8mbit prio 1
 
-# BULK SUB-CLASS (Class 1:30) - Nested inside 1:1, Priority 2
-tc class add dev $WIFI_5G parent 1:1 classid 1:30 htb rate 100kbit ceil 7mbit prio 2
+# BULK SUB-CLASS (Class 1:30) - Nested inside 1:1, Priority 2, 1x Ceil
+tc class add dev $WIFI_5G parent 1:1 classid 1:30 htb rate 100kbit ceil 4mbit prio 2
+
+# --- [4] Fairness (fq_codel) ---
+# Add fq_codel to leaf classes for per-flow fairness and low latency
+tc qdisc add dev $WIFI_5G parent 1:10 handle 10: fq_codel
+tc qdisc add dev $WIFI_5G parent 1:20 handle 20: fq_codel
+tc qdisc add dev $WIFI_5G parent 1:30 handle 30: fq_codel
 
 # --- [4] Apply Filters ---
 # LAN traffic (Mark 0x20) to bypass class
