@@ -75,27 +75,45 @@ func (c *Controller) evaluate() {
 	switch {
 	// --- 100% packet loss: maximum backoff ---
 	case lossRatio >= 1.0:
-		c.currentRate = int(float64(c.currentRate) * c.decreaseMult)
-		log.Printf("[THROTTLE] 100%% packet loss! Cutting bandwidth to %d kbps.", c.currentRate)
+		newRate := int(float64(c.currentRate) * c.decreaseMult)
+		newRate = clamp(newRate, c.minRate, c.maxRate)
+		if newRate < c.currentRate {
+			log.Printf("[THROTTLE] 100%% packet loss! Cutting bandwidth from %d to %d kbps.", c.currentRate, newRate)
+		} else {
+			log.Printf("[THROTTLE] 100%% packet loss! Holding at minimum rate %d kbps.", c.currentRate)
+		}
+		c.currentRate = newRate
 
 	// --- Congested: MD ---
 	case avgMs > (minMs+c.congestionThreshMs) || lossRatio > 0:
-		c.currentRate = int(float64(c.currentRate) * c.decreaseMult)
-		log.Printf("[THROTTLE] Ping spiked to %.1fms (min=%.1fms, loss=%.0f%%). Cutting bandwidth to %d kbps.",
-			avgMs, minMs, lossRatio*100, c.currentRate)
+		newRate := int(float64(c.currentRate) * c.decreaseMult)
+		newRate = clamp(newRate, c.minRate, c.maxRate)
+		if newRate < c.currentRate {
+			log.Printf("[THROTTLE] Ping spiked to %.1fms (min=%.1fms, loss=%.0f%%). Cutting bandwidth from %d to %d kbps.",
+				avgMs, minMs, lossRatio*100, c.currentRate, newRate)
+		} else {
+			log.Printf("[THROTTLE] Ping spiked to %.1fms (min=%.1fms, loss=%.0f%%). Holding at minimum rate %d kbps.",
+				avgMs, minMs, lossRatio*100, c.currentRate)
+		}
+		c.currentRate = newRate
 
 	// --- Clear: AI ---
 	case avgMs <= (minMs+c.clearThreshMs) && lossRatio == 0:
-		c.currentRate = c.currentRate + c.additiveInc
-		log.Printf("[CLEAR] Ping stable at %.1fms (min=%.1fms). Pushing bandwidth to %d kbps.",
-			avgMs, minMs, c.currentRate)
+		newRate := c.currentRate + c.additiveInc
+		newRate = clamp(newRate, c.minRate, c.maxRate)
+		if newRate > c.currentRate {
+			log.Printf("[CLEAR] Ping stable at %.1fms (min=%.1fms). Pushing bandwidth from %d to %d kbps.",
+				avgMs, minMs, c.currentRate, newRate)
+		} else {
+			log.Printf("[CLEAR] Ping stable at %.1fms (min=%.1fms). Holding at maximum rate %d kbps.",
+				avgMs, minMs, c.currentRate)
+		}
+		c.currentRate = newRate
 
 	// --- Maintenance: hold ---
 	default:
 		log.Printf("[MAINTAIN] Ping at %.1fms (min=%.1fms). Holding at %d kbps.", avgMs, minMs, c.currentRate)
 	}
-
-	c.currentRate = clamp(c.currentRate, c.minRate, c.maxRate)
 
 	if c.currentRate != prevRate {
 		c.clampAndApply()

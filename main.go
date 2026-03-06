@@ -54,6 +54,9 @@ func main() {
 	// Components
 	pinger := NewPinger(PingHost, PingInterval, WindowSize, MinPingWindow, metrics)
 	executor := NewExecutor(TargetInterface, TargetClass)
+	if err := executor.Setup(); err != nil {
+		log.Fatalf("Failed to setup executor: %v", err)
+	}
 	controller := NewController(
 		metrics, executor,
 		ControlInterval,
