@@ -86,11 +86,15 @@ func (e *Executor) Setup() error {
 
 // Apply changes the HTB class rate to the given value in kbps.
 func (e *Executor) Apply(rateKbps int) error {
+	// Add burst/cburst for smoother behavior at low rates
+	// burst = rate / hz, but roughly 15k is common for 100Mbit.
+	// For AIMD, we want small but existing bursts.
 	cmd := exec.Command("tc", "class", "replace",
 		"dev", e.iface,
 		"parent", "1:",
 		"classid", e.classID,
 		"htb", "rate", fmt.Sprintf("%dkbit", rateKbps),
+		"burst", "15k", "cburst", "15k",
 	)
 
 	out, err := cmd.CombinedOutput()

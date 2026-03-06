@@ -51,7 +51,9 @@ func NewPinger(urls []string, interval time.Duration, windowSize int, minPingWin
 		samples:       make([]sample, windowSize),
 		client: &http.Client{
 			Timeout: 2 * time.Second,
-			// Disable follow redirects as generate_204 shouldn't redirect
+			Transport: &http.Transport{
+				Proxy: nil, // Bypass any system proxies
+			},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -85,11 +87,15 @@ func (p *Pinger) measure() (time.Duration, bool) {
 		log.Printf("[PINGER] HTTP Probe to %s failed: %v", url, err)
 		return 0, false
 	}
-	// We don't strictly need to read the body for generate_204, just get the headers
-	resp.Body.Close()
+	defer resp.Body.Close()
 	elapsed := time.Since(start)
 
-	// Even if it's not 204, if it responded it means the path is clear
+	// Log first success to confirm it's actually reaching out
+	if p.rttCount < 5 {
+		remote := resp.Request.URL.Host
+		log.Printf("[PINGER] Probe to %s (%s) success: status=%d, rtt=%v", url, remote, resp.StatusCode, elapsed)
+	}
+
 	return elapsed, true
 }
 
