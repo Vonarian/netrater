@@ -1,6 +1,6 @@
 [Unit]
 Description=NetRater – AIMD Bandwidth Controller
-Documentation=https://github.com/vonar/netrater
+Documentation=https://github.com/vonarian/netrater
 After=network-online.target
 Wants=network-online.target
 
