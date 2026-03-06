@@ -2,7 +2,9 @@ package main
 
 import (
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -29,6 +31,9 @@ type Pinger struct {
 	urlIdx        int
 	minSamples    []minSample // samples for decaying min
 	client        *http.Client
+	proxyStr      string
+	ipCache       map[string]string // domain -> ip
+	cacheMu       sync.RWMutex
 }
 
 type sample struct {
@@ -41,30 +46,53 @@ type minSample struct {
 	at  time.Time
 }
 
-func NewPinger(urls []string, interval time.Duration, windowSize int, minPingWindow time.Duration, metrics *PingerMetrics) *Pinger {
-	return &Pinger{
+func NewPinger(urls []string, proxyStr string, interval time.Duration, windowSize int, minPingWindow time.Duration, metrics *PingerMetrics) *Pinger {
+	p := &Pinger{
 		urls:          urls,
+		proxyStr:      proxyStr,
 		interval:      interval,
 		windowSize:    windowSize,
 		minPingWindow: minPingWindow,
 		metrics:       metrics,
 		samples:       make([]sample, windowSize),
-		client: &http.Client{
-			Timeout: 2 * time.Second,
-			Transport: &http.Transport{
-				Proxy: nil, // Bypass any system proxies
-			},
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
+		ipCache:       make(map[string]string),
+	}
+
+	transport := &http.Transport{
+		DisableKeepAlives: true, // Force new connection to measure latency
+	}
+
+	if proxyStr != "" {
+		proxyURL, err := url.Parse(proxyStr)
+		if err == nil {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		} else {
+			log.Printf("[PINGER] Invalid proxy URL %s: %v", proxyStr, err)
+		}
+	}
+
+	p.client = &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
 		},
 	}
+
+	return p
 }
 
 // Run starts the pinger loop. It blocks until ctx is cancelled via the stop channel.
 func (p *Pinger) Run(stop <-chan struct{}) {
+	// Initial resolution
+	p.resolveIPs()
+
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
+
+	// 24-hour cycle for IP refresh
+	refreshTicker := time.NewTicker(24 * time.Hour)
+	defer refreshTicker.Stop()
 
 	for {
 		select {
@@ -73,27 +101,85 @@ func (p *Pinger) Run(stop <-chan struct{}) {
 		case <-ticker.C:
 			rtt, ok := p.measure()
 			p.recordSample(rtt, ok)
+		case <-refreshTicker.C:
+			p.resolveIPs()
 		}
 	}
 }
 
+func (p *Pinger) resolveIPs() {
+	log.Println("[PINGER] Refreshing IP cache for domains...")
+	for _, uStr := range p.urls {
+		parsed, err := url.Parse(uStr)
+		if err != nil {
+			continue
+		}
+		host := parsed.Hostname()
+		ips, err := net.LookupIP(host)
+		if err != nil || len(ips) == 0 {
+			log.Printf("[PINGER] Failed to resolve %s: %v", host, err)
+			continue
+		}
+		// Pick the first IPv4 if possible
+		var targetIP string
+		for _, ip := range ips {
+			if ip.To4() != nil {
+				targetIP = ip.String()
+				break
+			}
+		}
+		if targetIP == "" {
+			targetIP = ips[0].String()
+		}
+
+		p.cacheMu.Lock()
+		p.ipCache[host] = targetIP
+		p.cacheMu.Unlock()
+		log.Printf("[PINGER] Resolved %s -> %s", host, targetIP)
+	}
+}
+
 func (p *Pinger) measure() (time.Duration, bool) {
-	url := p.urls[p.urlIdx]
+	uStr := p.urls[p.urlIdx]
 	p.urlIdx = (p.urlIdx + 1) % len(p.urls)
 
-	start := time.Now()
-	resp, err := p.client.Get(url)
+	parsed, err := url.Parse(uStr)
 	if err != nil {
-		log.Printf("[PINGER] HTTP Probe to %s failed: %v", url, err)
+		return 0, false
+	}
+
+	host := parsed.Hostname()
+	p.cacheMu.RLock()
+	ip := p.ipCache[host]
+	p.cacheMu.RUnlock()
+
+	targetURL := uStr
+	if ip != "" {
+		// Replace host with IP in URL for direct connection
+		// Note: We MUST keep the original host in the 'Host' header for HTTPS/SNI
+		parsed.Host = net.JoinHostPort(ip, parsed.Port())
+		targetURL = parsed.String()
+	}
+
+	req, err := http.NewRequest("GET", targetURL, nil)
+	if err != nil {
+		return 0, false
+	}
+	// Restore host header for SNI and virtual hosting
+	req.Host = host
+
+	start := time.Now()
+	resp, err := p.client.Do(req)
+	if err != nil {
+		log.Printf("[PINGER] HTTP Probe to %s failed: %v", uStr, err)
 		return 0, false
 	}
 	defer resp.Body.Close()
 	elapsed := time.Since(start)
 
-	// Log first success to confirm it's actually reaching out
+	// Log first few successes or if we see a change
 	if p.rttCount < 5 {
-		remote := resp.Request.URL.Host
-		log.Printf("[PINGER] Probe to %s (%s) success: status=%d, rtt=%v", url, remote, resp.StatusCode, elapsed)
+		log.Printf("[PINGER] Probe to %s (%s) success: rtt=%v", uStr, ip, elapsed)
 	}
 
 	return elapsed, true

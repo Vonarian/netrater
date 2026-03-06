@@ -15,6 +15,9 @@ const (
 	TargetInterface = "wlx50ebf65e7306"
 	TargetClass     = "1:1"
 
+	// Proxy settings (e.g. "socks5://127.0.0.1:10808" or "" for none)
+	ProxyAddress = "socks5://127.0.0.1:10808"
+
 	// Bandwidth bounds (kbps)
 	MinRate   = 1000
 	MaxRate   = 7000
@@ -55,6 +58,9 @@ func main() {
 	log.Println("═══════════════════════════════════════════════════")
 	log.Println("  NetRater – AIMD Bandwidth Controller")
 	log.Printf("  Interface: %s  Class: %s  URLs: %d rotating", TargetInterface, TargetClass, len(PingURLs))
+	if ProxyAddress != "" {
+		log.Printf("  Proxy: %s", ProxyAddress)
+	}
 	log.Printf("  Rate range: %d–%d kbps  Start: %d kbps", MinRate, MaxRate, StartRate)
 	log.Println("═══════════════════════════════════════════════════")
 
@@ -62,7 +68,7 @@ func main() {
 	metrics := &PingerMetrics{}
 
 	// Components
-	pinger := NewPinger(PingURLs, PingInterval, WindowSize, MinPingWindow, metrics)
+	pinger := NewPinger(PingURLs, ProxyAddress, PingInterval, WindowSize, MinPingWindow, metrics)
 	executor := NewExecutor(TargetInterface, TargetClass)
 	if err := executor.Setup(); err != nil {
 		log.Fatalf("Failed to setup executor: %v", err)
