@@ -15,6 +15,11 @@ tc qdisc del dev $WIFI_5G root 2>/dev/null || true
 iptables -t mangle -N VIP_MARK
 iptables -t mangle -I PREROUTING -j VIP_MARK
 iptables -t mangle -I POSTROUTING -j VIP_MARK
+
+# [NEW] [Bypass] Mark all 192.168.x.x traffic as 0x20 and skip further marking
+iptables -t mangle -A VIP_MARK -d 192.168.0.0/16 -j MARK --set-mark 0x20
+iptables -t mangle -A VIP_MARK -d 192.168.0.0/16 -j RETURN
+
 for IP in "${VIP_IPS[@]}"; do
     iptables -t mangle -A VIP_MARK -s "$IP" -j MARK --set-mark 0x10
     iptables -t mangle -A VIP_MARK -d "$IP" -j MARK --set-mark 0x10
@@ -31,13 +36,13 @@ tc class add dev $WIFI_5G parent 1: classid 1:10 htb rate 1000mbit prio 0
 tc class add dev $WIFI_5G parent 1: classid 1:1 htb rate 4mbit
 
 # VIP SUB-CLASS (Class 1:20) - Nested inside 1:1, Priority 1
-tc class add dev $WIFI_5G parent 1:1 classid 1:20 htb rate 1kbit ceil 7mbit prio 1
+tc class add dev $WIFI_5G parent 1:1 classid 1:20 htb rate 100kbit ceil 7mbit prio 1
 
 # BULK SUB-CLASS (Class 1:30) - Nested inside 1:1, Priority 2
-tc class add dev $WIFI_5G parent 1:1 classid 1:30 htb rate 1kbit ceil 7mbit prio 2
+tc class add dev $WIFI_5G parent 1:1 classid 1:30 htb rate 100kbit ceil 7mbit prio 2
 
 # --- [4] Apply Filters ---
-# LAN traffic to bypass class
-tc filter add dev $WIFI_5G protocol ip parent 1: prio 0 u32 match ip dst 192.168.0.0/16 flowid 1:10
+# LAN traffic (Mark 0x20) to bypass class
+tc filter add dev $WIFI_5G protocol ip parent 1: prio 0 handle 0x20 fw flowid 1:10
 # VIP traffic (Mark 0x10) to VIP class
 tc filter add dev $WIFI_5G protocol ip parent 1: prio 1 handle 0x10 fw flowid 1:20
