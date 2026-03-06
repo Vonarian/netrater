@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"net"
 	"sync"
 	"time"
 
@@ -17,17 +19,23 @@ type PingerMetrics struct {
 	LossRatio float64       // 0.0–1.0 in the current window
 }
 
-// Pinger sends ICMP pings and maintains rolling statistics.
+// Pinger sends ICMP pings or TCP probes and maintains rolling statistics.
 type Pinger struct {
 	host          string
+	port          int // if > 0, use TCPing
 	interval      time.Duration
 	windowSize    int
 	minPingWindow time.Duration
 	metrics       *PingerMetrics
-	rtts          []time.Duration // circular buffer for rolling avg
+	samples       []sample // circular buffer for rolling avg
 	rttIdx        int
 	rttCount      int
 	minSamples    []minSample // samples for decaying min
+}
+
+type sample struct {
+	rtt time.Duration
+	ok  bool
 }
 
 type minSample struct {
@@ -35,14 +43,15 @@ type minSample struct {
 	at  time.Time
 }
 
-func NewPinger(host string, interval time.Duration, windowSize int, minPingWindow time.Duration, metrics *PingerMetrics) *Pinger {
+func NewPinger(host string, port int, interval time.Duration, windowSize int, minPingWindow time.Duration, metrics *PingerMetrics) *Pinger {
 	return &Pinger{
 		host:          host,
+		port:          port,
 		interval:      interval,
 		windowSize:    windowSize,
 		minPingWindow: minPingWindow,
 		metrics:       metrics,
-		rtts:          make([]time.Duration, windowSize),
+		samples:       make([]sample, windowSize),
 	}
 }
 
@@ -56,15 +65,36 @@ func (p *Pinger) Run(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			rtt, ok := p.sendPing()
+			rtt, ok := p.measure()
 			p.recordSample(rtt, ok)
 		}
 	}
 }
 
-// sendPing sends a single ICMP ping and returns the RTT.
+func (p *Pinger) measure() (time.Duration, bool) {
+	if p.port > 0 {
+		return p.sendTCPPing()
+	}
+	return p.sendICMPPing()
+}
+
+// sendTCPPing measures latency via a TCP handshake.
+func (p *Pinger) sendTCPPing() (time.Duration, bool) {
+	address := net.JoinHostPort(p.host, fmt.Sprintf("%d", p.port))
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		// Log rarely to avoid spamming if the port is closed or network is down
+		return 0, false
+	}
+	elapsed := time.Since(start)
+	conn.Close()
+	return elapsed, true
+}
+
+// sendICMPPing sends a single ICMP ping and returns the RTT.
 // Returns (0, false) on timeout/error.
-func (p *Pinger) sendPing() (time.Duration, bool) {
+func (p *Pinger) sendICMPPing() (time.Duration, bool) {
 	pinger, err := probing.NewPinger(p.host)
 	if err != nil {
 		log.Printf("[PINGER] Error creating pinger: %v", err)
@@ -92,12 +122,7 @@ func (p *Pinger) recordSample(rtt time.Duration, received bool) {
 	now := time.Now()
 
 	// --- Update rolling RTT window ---
-	if received {
-		p.rtts[p.rttIdx] = rtt
-	} else {
-		// Treat loss as a sentinel "infinite" RTT for averaging purposes
-		p.rtts[p.rttIdx] = 0
-	}
+	p.samples[p.rttIdx] = sample{rtt: rtt, ok: received}
 	p.rttIdx = (p.rttIdx + 1) % p.windowSize
 	if p.rttCount < p.windowSize {
 		p.rttCount++
@@ -108,10 +133,10 @@ func (p *Pinger) recordSample(rtt time.Duration, received bool) {
 	var lostCount int
 	count := p.rttCount
 	for i := 0; i < count; i++ {
-		if p.rtts[i] == 0 {
+		if !p.samples[i].ok {
 			lostCount++
 		} else {
-			sum += p.rtts[i]
+			sum += p.samples[i].rtt
 		}
 	}
 

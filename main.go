@@ -14,7 +14,8 @@ const (
 	// Network target
 	TargetInterface = "wlx50ebf65e7306"
 	TargetClass     = "1:1"
-	PingHost        = "1.1.1.1"
+	PingHost        = "google.com"
+	PingPort        = 443 // Set to 0 to use ICMP, or a port (e.g. 443) for TCPing
 
 	// Bandwidth bounds (kbps)
 	MinRate   = 1000
@@ -44,7 +45,7 @@ func main() {
 	log.SetFlags(0)
 	log.Println("═══════════════════════════════════════════════════")
 	log.Println("  NetRater – AIMD Bandwidth Controller")
-	log.Printf("  Interface: %s  Class: %s  Ping: %s", TargetInterface, TargetClass, PingHost)
+	log.Printf("  Interface: %s  Class: %s  Ping: %s  Port: %d", TargetInterface, TargetClass, PingHost, PingPort)
 	log.Printf("  Rate range: %d–%d kbps  Start: %d kbps", MinRate, MaxRate, StartRate)
 	log.Println("═══════════════════════════════════════════════════")
 
@@ -52,7 +53,7 @@ func main() {
 	metrics := &PingerMetrics{}
 
 	// Components
-	pinger := NewPinger(PingHost, PingInterval, WindowSize, MinPingWindow, metrics)
+	pinger := NewPinger(PingHost, PingPort, PingInterval, WindowSize, MinPingWindow, metrics)
 	executor := NewExecutor(TargetInterface, TargetClass)
 	if err := executor.Setup(); err != nil {
 		log.Fatalf("Failed to setup executor: %v", err)
