@@ -35,16 +35,16 @@ var PingURLs = []string{
 
 const (
 	// Pinger timing
-	PingInterval  = 500 * time.Millisecond
-	WindowSize    = 4 // rolling avg window (4 × 500ms = 2s)
+	PingInterval  = 750 * time.Millisecond
+	WindowSize    = 5 // rolling avg window (5 × 750ms = 3.75s)
 	MinPingWindow = 60 * time.Second
 
 	// Controller timing
-	ControlInterval = 1 * time.Second
+	// Removed ControlInterval because evaluation is now sequential with pinging
 
 	// AIMD thresholds
 	// Since we are using a proxy, baseline latency is naturally high (250-400ms).
-	// We only want to throttle if it spikes significantly above the base or exceeds 600ms.
+	// We only want to throttle if it spikes significantly above the base or exceeds the MaxAcceptableRTT.
 	CongestionThresholdMs = 150.0 // ms above MinPing → congested
 	ClearThresholdMs      = 50.0  // ms above MinPing → clear
 	AdditiveIncrease      = 250   // kbps
@@ -80,7 +80,6 @@ func main() {
 	}
 	controller := NewController(
 		metrics, executor,
-		ControlInterval,
 		StartRate, MinRate, MaxRate,
 		CongestionThresholdMs, ClearThresholdMs,
 		DecreaseMultiplier, AdditiveIncrease,
@@ -90,21 +89,47 @@ func main() {
 	// Stop channel for graceful shutdown
 	stop := make(chan struct{})
 
-	// Start goroutines
-	go pinger.Run(stop)
-	go controller.Run(stop)
+	log.Println("[MAIN] Running sequentially. Press Ctrl+C to stop.")
 
-	log.Println("[MAIN] Running. Press Ctrl+C to stop.")
-
-	// Wait for termination signal
+	// Wait for termination signal in a separate goroutine
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
+	go func() {
+		sig := <-sigCh
+		log.Printf("[MAIN] Received %v, shutting down...", sig)
+		close(stop)
+	}()
 
-	log.Printf("[MAIN] Received %v, shutting down...", sig)
-	close(stop)
+	// 24-hour cycle for IP refresh
+	refreshTicker := time.NewTicker(24 * time.Hour)
+	defer refreshTicker.Stop()
 
-	// Give goroutines a moment to exit cleanly
-	time.Sleep(200 * time.Millisecond)
-	log.Println("[MAIN] Goodbye.")
+	// Initial resolution and rate application
+	pinger.ResolveIPs()
+	controller.ClampAndApply()
+
+	// SEQUENTIAL MAIN LOOP
+	for {
+		select {
+		case <-stop:
+			time.Sleep(200 * time.Millisecond) // Give goroutines a moment to exit cleanly
+			log.Println("[MAIN] Goodbye.")
+			return
+		case <-refreshTicker.C:
+			pinger.ResolveIPs()
+		default:
+			// 1. Ping
+			pinger.MeasureAndRecord()
+
+			// 2. Evaluate
+			controller.Evaluate()
+
+			// 3. Sleep until next ping interval
+			// Using select with time.After so it responds to stop signals during sleep
+			select {
+			case <-stop:
+			case <-time.After(PingInterval):
+			}
+		}
+	}
 }

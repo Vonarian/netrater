@@ -82,32 +82,14 @@ func NewPinger(urls []string, proxyStr string, interval time.Duration, windowSiz
 	return p
 }
 
-// Run starts the pinger loop. It blocks until ctx is cancelled via the stop channel.
-func (p *Pinger) Run(stop <-chan struct{}) {
-	// Initial resolution
-	p.resolveIPs()
-
-	ticker := time.NewTicker(p.interval)
-	defer ticker.Stop()
-
-	// 24-hour cycle for IP refresh
-	refreshTicker := time.NewTicker(24 * time.Hour)
-	defer refreshTicker.Stop()
-
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			rtt, ok := p.measure()
-			p.recordSample(rtt, ok)
-		case <-refreshTicker.C:
-			p.resolveIPs()
-		}
-	}
+// MeasureAndRecord performs a single probe and records the result.
+func (p *Pinger) MeasureAndRecord() {
+	rtt, ok := p.measure()
+	p.recordSample(rtt, ok)
 }
 
-func (p *Pinger) resolveIPs() {
+// ResolveIPs refreshes the IP cache for all target domains.
+func (p *Pinger) ResolveIPs() {
 	log.Println("[PINGER] Refreshing IP cache for domains...")
 	for _, uStr := range p.urls {
 		parsed, err := url.Parse(uStr)

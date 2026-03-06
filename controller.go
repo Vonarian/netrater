@@ -9,7 +9,6 @@ import (
 type Controller struct {
 	metrics            *PingerMetrics
 	executor           *Executor
-	interval           time.Duration
 	currentRate        int     // kbps
 	minRate            int     // kbps
 	maxRate            int     // kbps
@@ -18,12 +17,13 @@ type Controller struct {
 	decreaseMult       float64 // multiplicative decrease factor
 	additiveInc        int     // kbps additive increase
 	maxAcceptableMs    float64 // absolute latency ceiling
+	lastThrottle       time.Time
+	maintainCount      int
 }
 
 func NewController(
 	metrics *PingerMetrics,
 	executor *Executor,
-	interval time.Duration,
 	startRate, minRate, maxRate int,
 	congestionThreshMs, clearThreshMs float64,
 	decreaseMult float64,
@@ -33,7 +33,6 @@ func NewController(
 	return &Controller{
 		metrics:            metrics,
 		executor:           executor,
-		interval:           interval,
 		currentRate:        startRate,
 		minRate:            minRate,
 		maxRate:            maxRate,
@@ -42,28 +41,13 @@ func NewController(
 		decreaseMult:       decreaseMult,
 		additiveInc:        additiveInc,
 		maxAcceptableMs:    maxAcceptableMs,
+		maintainCount:      0,
 	}
 }
 
-// Run starts the control loop. Blocks until stop is closed.
-func (c *Controller) Run(stop <-chan struct{}) {
-	// Apply the starting rate immediately
-	c.clampAndApply()
-
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			c.evaluate()
-		}
-	}
-}
-
-func (c *Controller) evaluate() {
+// Evaluate assesses the current network conditions based on pinger metrics
+// and decides whether to throttle, maintain, or increase the rate.
+func (c *Controller) Evaluate() {
 	// Snapshot the pinger metrics
 	c.metrics.Mu.Lock()
 	avgPing := c.metrics.AvgPing
@@ -74,14 +58,22 @@ func (c *Controller) evaluate() {
 	avgMs := float64(avgPing) / float64(time.Millisecond)
 	minMs := float64(minPing) / float64(time.Millisecond)
 	prevRate := c.currentRate
+	now := time.Now()
+
+	// Cooldown: don't throttle more than once every 2 seconds
+	cooldown := 2 * time.Second
 
 	switch {
 	// --- 100% packet loss: maximum backoff ---
 	case lossRatio >= 1.0:
+		if now.Sub(c.lastThrottle) < cooldown {
+			return
+		}
 		newRate := int(float64(c.currentRate) * c.decreaseMult)
 		newRate = clamp(newRate, c.minRate, c.maxRate)
 		if newRate < c.currentRate {
 			log.Printf("[THROTTLE] 100%% packet loss! Cutting bandwidth from %d to %d kbps.", c.currentRate, newRate)
+			c.lastThrottle = now
 		} else {
 			log.Printf("[THROTTLE] 100%% packet loss! Holding at minimum rate %d kbps.", c.currentRate)
 		}
@@ -89,11 +81,15 @@ func (c *Controller) evaluate() {
 
 	// --- Congested: MD (spiked or > absolute max) ---
 	case avgMs > (minMs+c.congestionThreshMs) || avgMs > c.maxAcceptableMs || lossRatio > 0:
+		if now.Sub(c.lastThrottle) < cooldown {
+			return
+		}
 		newRate := int(float64(c.currentRate) * c.decreaseMult)
 		newRate = clamp(newRate, c.minRate, c.maxRate)
 		if newRate < c.currentRate {
 			log.Printf("[THROTTLE] Ping spiked to %.1fms (min=%.1fms, loss=%.0f%%). Cutting bandwidth from %d to %d kbps.",
 				avgMs, minMs, lossRatio*100, c.currentRate, newRate)
+			c.lastThrottle = now
 		} else {
 			log.Printf("[THROTTLE] Ping spiked to %.1fms (min=%.1fms, loss=%.0f%%). Holding at minimum rate %d kbps.",
 				avgMs, minMs, lossRatio*100, c.currentRate)
@@ -108,22 +104,29 @@ func (c *Controller) evaluate() {
 			log.Printf("[CLEAR] Ping stable at %.1fms (min=%.1fms). Pushing bandwidth from %d to %d kbps.",
 				avgMs, minMs, c.currentRate, newRate)
 		} else {
-			log.Printf("[CLEAR] Ping stable at %.1fms (min=%.1fms). Holding at maximum rate %d kbps.",
-				avgMs, minMs, c.currentRate)
+			c.maintainCount++
+			if c.maintainCount%10 == 0 {
+				log.Printf("[MAINTAIN] Ping stable at %.1fms (min=%.1fms). Holding at maximum rate %d kbps.",
+					avgMs, minMs, c.currentRate)
+			}
 		}
 		c.currentRate = newRate
 
 	// --- Maintenance: hold ---
 	default:
-		log.Printf("[MAINTAIN] Ping at %.1fms (min=%.1fms). Holding at %d kbps.", avgMs, minMs, c.currentRate)
+		c.maintainCount++
+		if c.maintainCount%10 == 0 {
+			log.Printf("[MAINTAIN] Ping at %.1fms (min=%.1fms). Holding at %d kbps.", avgMs, minMs, c.currentRate)
+		}
 	}
 
 	if c.currentRate != prevRate {
-		c.clampAndApply()
+		c.ClampAndApply()
 	}
 }
 
-func (c *Controller) clampAndApply() {
+// ClampAndApply enforces rate bounds and applies the current rate via the executor.
+func (c *Controller) ClampAndApply() {
 	c.currentRate = clamp(c.currentRate, c.minRate, c.maxRate)
 	if err := c.executor.Apply(c.currentRate); err != nil {
 		log.Printf("[CONTROLLER] Failed to apply rate: %v", err)
