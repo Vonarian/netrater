@@ -14,14 +14,23 @@ const (
 	// Network target
 	TargetInterface = "wlx50ebf65e7306"
 	TargetClass     = "1:1"
-	PingHost        = "google.com"
-	PingPort        = 443 // Set to 0 to use ICMP, or a port (e.g. 443) for TCPing
 
 	// Bandwidth bounds (kbps)
 	MinRate   = 1000
 	MaxRate   = 7000
 	StartRate = 3500
+)
 
+// Rotating Generate 204 URLs for realistic latency measurement
+var PingURLs = []string{
+	"http://connectivitycheck.gstatic.com/generate_204",
+	"http://clients3.google.com/generate_204",
+	"http://www.gstatic.com/generate_204",
+	"http://connectivitycheck.android.com/generate_204",
+	"http://play.googleapis.com/generate_204",
+}
+
+const (
 	// Pinger timing
 	PingInterval  = 500 * time.Millisecond
 	WindowSize    = 4 // rolling avg window (4 × 500ms = 2s)
@@ -45,7 +54,7 @@ func main() {
 	log.SetFlags(0)
 	log.Println("═══════════════════════════════════════════════════")
 	log.Println("  NetRater – AIMD Bandwidth Controller")
-	log.Printf("  Interface: %s  Class: %s  Ping: %s  Port: %d", TargetInterface, TargetClass, PingHost, PingPort)
+	log.Printf("  Interface: %s  Class: %s  URLs: %d rotating", TargetInterface, TargetClass, len(PingURLs))
 	log.Printf("  Rate range: %d–%d kbps  Start: %d kbps", MinRate, MaxRate, StartRate)
 	log.Println("═══════════════════════════════════════════════════")
 
@@ -53,7 +62,7 @@ func main() {
 	metrics := &PingerMetrics{}
 
 	// Components
-	pinger := NewPinger(PingHost, PingPort, PingInterval, WindowSize, MinPingWindow, metrics)
+	pinger := NewPinger(PingURLs, PingInterval, WindowSize, MinPingWindow, metrics)
 	executor := NewExecutor(TargetInterface, TargetClass)
 	if err := executor.Setup(); err != nil {
 		log.Fatalf("Failed to setup executor: %v", err)

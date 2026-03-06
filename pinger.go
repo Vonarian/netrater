@@ -1,13 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"net"
+	"net/http"
 	"sync"
 	"time"
-
-	probing "github.com/prometheus-community/pro-bing"
 )
 
 // PingerMetrics holds the latest metrics produced by the Pinger goroutine.
@@ -19,10 +16,9 @@ type PingerMetrics struct {
 	LossRatio float64       // 0.0–1.0 in the current window
 }
 
-// Pinger sends ICMP pings or TCP probes and maintains rolling statistics.
+// Pinger sends HTTPS probes to rotating URLs and maintains rolling statistics.
 type Pinger struct {
-	host          string
-	port          int // if > 0, use TCPing
+	urls          []string
 	interval      time.Duration
 	windowSize    int
 	minPingWindow time.Duration
@@ -30,7 +26,9 @@ type Pinger struct {
 	samples       []sample // circular buffer for rolling avg
 	rttIdx        int
 	rttCount      int
+	urlIdx        int
 	minSamples    []minSample // samples for decaying min
+	client        *http.Client
 }
 
 type sample struct {
@@ -43,15 +41,21 @@ type minSample struct {
 	at  time.Time
 }
 
-func NewPinger(host string, port int, interval time.Duration, windowSize int, minPingWindow time.Duration, metrics *PingerMetrics) *Pinger {
+func NewPinger(urls []string, interval time.Duration, windowSize int, minPingWindow time.Duration, metrics *PingerMetrics) *Pinger {
 	return &Pinger{
-		host:          host,
-		port:          port,
+		urls:          urls,
 		interval:      interval,
 		windowSize:    windowSize,
 		minPingWindow: minPingWindow,
 		metrics:       metrics,
 		samples:       make([]sample, windowSize),
+		client: &http.Client{
+			Timeout: 2 * time.Second,
+			// Disable follow redirects as generate_204 shouldn't redirect
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -72,58 +76,21 @@ func (p *Pinger) Run(stop <-chan struct{}) {
 }
 
 func (p *Pinger) measure() (time.Duration, bool) {
-	rtt, ok := time.Duration(0), false
-	if p.port > 0 {
-		rtt, ok = p.sendTCPPing()
-	} else {
-		rtt, ok = p.sendICMPPing()
-	}
+	url := p.urls[p.urlIdx]
+	p.urlIdx = (p.urlIdx + 1) % len(p.urls)
 
-	if !ok {
-		// Log failures at most once per second to avoid flooding if it's a persistent issue
-		log.Printf("[PINGER] Probe to %s:%d failed", p.host, p.port)
-	}
-	return rtt, ok
-}
-
-// sendTCPPing measures latency via a TCP handshake.
-func (p *Pinger) sendTCPPing() (time.Duration, bool) {
-	address := net.JoinHostPort(p.host, fmt.Sprintf("%d", p.port))
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	resp, err := p.client.Get(url)
 	if err != nil {
-		log.Printf("[PINGER] TCP dial error to %s: %v", address, err)
+		log.Printf("[PINGER] HTTP Probe to %s failed: %v", url, err)
 		return 0, false
 	}
+	// We don't strictly need to read the body for generate_204, just get the headers
+	resp.Body.Close()
 	elapsed := time.Since(start)
-	conn.Close()
+
+	// Even if it's not 204, if it responded it means the path is clear
 	return elapsed, true
-}
-
-// sendICMPPing sends a single ICMP ping and returns the RTT.
-// Returns (0, false) on timeout/error.
-func (p *Pinger) sendICMPPing() (time.Duration, bool) {
-	pinger, err := probing.NewPinger(p.host)
-	if err != nil {
-		log.Printf("[PINGER] Error creating pinger: %v", err)
-		return 0, false
-	}
-	pinger.Count = 1
-	pinger.Timeout = 2 * time.Second
-	pinger.SetPrivileged(true) // requires CAP_NET_RAW or root
-
-	err = pinger.Run()
-	if err != nil {
-		log.Printf("[PINGER] ICMP Run failed for %s: %v", p.host, err)
-		return 0, false
-	}
-
-	stats := pinger.Statistics()
-	if stats.PacketsRecv == 0 {
-		log.Printf("[PINGER] ICMP Packet Loss for %s", p.host)
-		return 0, false
-	}
-	return stats.AvgRtt, true
 }
 
 // recordSample updates the rolling window and min-ping tracker.
