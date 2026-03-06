@@ -35,23 +35,22 @@ var PingURLs = []string{
 
 const (
 	// Pinger timing
-	PingInterval  = 750 * time.Millisecond
-	WindowSize    = 5 // rolling avg window (5 × 750ms = 3.75s)
-	MinPingWindow = 60 * time.Second
-
+	PingInterval = 750 * time.Millisecond
+	WindowSize   = 5 // rolling avg window (5 × 750ms = 3.75s)
 	// Controller timing
 	// Removed ControlInterval because evaluation is now sequential with pinging
 
-	// AIMD thresholds
-	// Since we are using a proxy, baseline latency is naturally high (250-400ms).
-	// We only want to throttle if it spikes significantly above the base or exceeds the MaxAcceptableRTT.
-	CongestionThresholdMs = 150.0 // ms above MinPing → congested
-	ClearThresholdMs      = 50.0  // ms above MinPing → clear
-	AdditiveIncrease      = 250   // kbps
+	// ─── Proportional Control Configuration ───
 
-	// Absolute ceiling for latency before we MUST throttle, regardless of MinPing
+	// Absolute ceiling for latency. If average RTT exceeds this, we dynamically throttle.
+	// If it is below this, we dynamically increase.
 	MaxAcceptableRTTMs = 675.0
-	DecreaseMultiplier = 0.85
+
+	// Maximum kbps to add per evaluation (approached when latency is near 0ms)
+	MaxAdditiveIncrease = 250.0
+
+	// Simulated RTT for a failed probe (e.g., timeout) to dynamically penalize loss
+	TimeoutPenaltyMs = 2000.0
 )
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -73,7 +72,7 @@ func main() {
 	metrics := &PingerMetrics{}
 
 	// Components
-	pinger := NewPinger(PingURLs, ProxyAddress, PingInterval, WindowSize, MinPingWindow, metrics)
+	pinger := NewPinger(PingURLs, ProxyAddress, PingInterval, WindowSize, TimeoutPenaltyMs, metrics)
 	executor := NewExecutor(TargetInterface, TargetClass)
 	if err := executor.Setup(); err != nil {
 		log.Fatalf("Failed to setup executor: %v", err)
@@ -81,9 +80,7 @@ func main() {
 	controller := NewController(
 		metrics, executor,
 		StartRate, MinRate, MaxRate,
-		CongestionThresholdMs, ClearThresholdMs,
-		DecreaseMultiplier, AdditiveIncrease,
-		MaxAcceptableRTTMs,
+		MaxAdditiveIncrease, MaxAcceptableRTTMs,
 	)
 
 	// Stop channel for graceful shutdown

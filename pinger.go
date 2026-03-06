@@ -14,26 +14,25 @@ import (
 type PingerMetrics struct {
 	Mu        sync.Mutex
 	AvgPing   time.Duration // rolling average of last WindowSize pings
-	MinPing   time.Duration // decaying minimum over MinPingWindow
-	LossRatio float64       // 0.0–1.0 in the current window
+	LossRatio float64       // 0.0–1.0 in the current window (for tracking, not throttling)
 }
 
 // Pinger sends HTTPS probes to rotating URLs and maintains rolling statistics.
 type Pinger struct {
-	urls          []string
-	interval      time.Duration
-	windowSize    int
-	minPingWindow time.Duration
-	metrics       *PingerMetrics
-	samples       []sample // circular buffer for rolling avg
-	rttIdx        int
-	rttCount      int
-	urlIdx        int
-	minSamples    []minSample // samples for decaying min
-	client        *http.Client
-	proxyStr      string
-	ipCache       map[string]string // domain -> ip
-	cacheMu       sync.RWMutex
+	urls           []string
+	interval       time.Duration
+	windowSize     int
+	minPingWindow  time.Duration
+	metrics        *PingerMetrics
+	samples        []sample // circular buffer for rolling avg
+	rttIdx         int
+	rttCount       int
+	urlIdx         int
+	client         *http.Client
+	proxyStr       string
+	ipCache        map[string]string // domain -> ip
+	cacheMu        sync.RWMutex
+	timeoutPenalty time.Duration
 }
 
 type sample struct {
@@ -41,21 +40,16 @@ type sample struct {
 	ok  bool
 }
 
-type minSample struct {
-	rtt time.Duration
-	at  time.Time
-}
-
-func NewPinger(urls []string, proxyStr string, interval time.Duration, windowSize int, minPingWindow time.Duration, metrics *PingerMetrics) *Pinger {
+func NewPinger(urls []string, proxyStr string, interval time.Duration, windowSize int, timeoutPenaltyMs float64, metrics *PingerMetrics) *Pinger {
 	p := &Pinger{
-		urls:          urls,
-		proxyStr:      proxyStr,
-		interval:      interval,
-		windowSize:    windowSize,
-		minPingWindow: minPingWindow,
-		metrics:       metrics,
-		samples:       make([]sample, windowSize),
-		ipCache:       make(map[string]string),
+		urls:           urls,
+		proxyStr:       proxyStr,
+		interval:       interval,
+		windowSize:     windowSize,
+		timeoutPenalty: time.Duration(timeoutPenaltyMs * float64(time.Millisecond)),
+		metrics:        metrics,
+		samples:        make([]sample, windowSize),
+		ipCache:        make(map[string]string),
 	}
 
 	transport := &http.Transport{
@@ -167,9 +161,8 @@ func (p *Pinger) measure() (time.Duration, bool) {
 	return elapsed, true
 }
 
-// recordSample updates the rolling window and min-ping tracker.
+// recordSample updates the rolling window.
 func (p *Pinger) recordSample(rtt time.Duration, received bool) {
-	now := time.Now()
 
 	// --- Update rolling RTT window ---
 	p.samples[p.rttIdx] = sample{rtt: rtt, ok: received}
@@ -185,6 +178,7 @@ func (p *Pinger) recordSample(rtt time.Duration, received bool) {
 	for i := 0; i < count; i++ {
 		if !p.samples[i].ok {
 			lostCount++
+			sum += p.timeoutPenalty // Treat loss as maximum timeout to organically spike the average
 		} else {
 			sum += p.samples[i].rtt
 		}
@@ -192,45 +186,14 @@ func (p *Pinger) recordSample(rtt time.Duration, received bool) {
 
 	var avgPing time.Duration
 	var lossRatio float64
-	if lostCount == count {
-		// 100% loss
-		lossRatio = 1.0
-		avgPing = 0
-	} else {
-		avgPing = sum / time.Duration(count-lostCount)
+	if count > 0 {
+		avgPing = sum / time.Duration(count)
 		lossRatio = float64(lostCount) / float64(count)
-	}
-
-	// --- Update decaying MinPing ---
-	if received {
-		p.minSamples = append(p.minSamples, minSample{rtt: rtt, at: now})
-	}
-
-	// Evict samples older than minPingWindow
-	cutoff := now.Add(-p.minPingWindow)
-	firstValid := 0
-	for firstValid < len(p.minSamples) && p.minSamples[firstValid].at.Before(cutoff) {
-		firstValid++
-	}
-	if firstValid > 0 {
-		p.minSamples = p.minSamples[firstValid:]
-	}
-
-	// Find the minimum among remaining samples
-	var minPing time.Duration
-	if len(p.minSamples) > 0 {
-		minPing = p.minSamples[0].rtt
-		for _, s := range p.minSamples[1:] {
-			if s.rtt < minPing {
-				minPing = s.rtt
-			}
-		}
 	}
 
 	// --- Publish metrics ---
 	p.metrics.Mu.Lock()
 	p.metrics.AvgPing = avgPing
-	p.metrics.MinPing = minPing
 	p.metrics.LossRatio = lossRatio
 	p.metrics.Mu.Unlock()
 }
