@@ -43,10 +43,15 @@ const (
 	ControlInterval = 1 * time.Second
 
 	// AIMD thresholds
-	CongestionThresholdMs = 40.0 // ms above MinPing → congested
-	ClearThresholdMs      = 15.0 // ms above MinPing → clear
-	DecreaseMultiplier    = 0.85
-	AdditiveIncrease      = 250 // kbps
+	// Since we are using a proxy, baseline latency is naturally high (250-400ms).
+	// We only want to throttle if it spikes significantly above the base or exceeds 600ms.
+	CongestionThresholdMs = 150.0 // ms above MinPing → congested
+	ClearThresholdMs      = 50.0  // ms above MinPing → clear
+	AdditiveIncrease      = 250   // kbps
+
+	// Absolute ceiling for latency before we MUST throttle, regardless of MinPing
+	MaxAcceptableRTTMs = 675.0
+	DecreaseMultiplier = 0.85
 )
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -79,6 +84,7 @@ func main() {
 		StartRate, MinRate, MaxRate,
 		CongestionThresholdMs, ClearThresholdMs,
 		DecreaseMultiplier, AdditiveIncrease,
+		MaxAcceptableRTTMs,
 	)
 
 	// Stop channel for graceful shutdown

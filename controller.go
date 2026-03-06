@@ -17,6 +17,7 @@ type Controller struct {
 	clearThreshMs      float64 // ms above MinPing to declare clear
 	decreaseMult       float64 // multiplicative decrease factor
 	additiveInc        int     // kbps additive increase
+	maxAcceptableMs    float64 // absolute latency ceiling
 }
 
 func NewController(
@@ -27,6 +28,7 @@ func NewController(
 	congestionThreshMs, clearThreshMs float64,
 	decreaseMult float64,
 	additiveInc int,
+	maxAcceptableMs float64,
 ) *Controller {
 	return &Controller{
 		metrics:            metrics,
@@ -39,6 +41,7 @@ func NewController(
 		clearThreshMs:      clearThreshMs,
 		decreaseMult:       decreaseMult,
 		additiveInc:        additiveInc,
+		maxAcceptableMs:    maxAcceptableMs,
 	}
 }
 
@@ -84,8 +87,8 @@ func (c *Controller) evaluate() {
 		}
 		c.currentRate = newRate
 
-	// --- Congested: MD ---
-	case avgMs > (minMs+c.congestionThreshMs) || lossRatio > 0:
+	// --- Congested: MD (spiked or > absolute max) ---
+	case avgMs > (minMs+c.congestionThreshMs) || avgMs > c.maxAcceptableMs || lossRatio > 0:
 		newRate := int(float64(c.currentRate) * c.decreaseMult)
 		newRate = clamp(newRate, c.minRate, c.maxRate)
 		if newRate < c.currentRate {
