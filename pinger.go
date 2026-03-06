@@ -72,10 +72,18 @@ func (p *Pinger) Run(stop <-chan struct{}) {
 }
 
 func (p *Pinger) measure() (time.Duration, bool) {
+	rtt, ok := time.Duration(0), false
 	if p.port > 0 {
-		return p.sendTCPPing()
+		rtt, ok = p.sendTCPPing()
+	} else {
+		rtt, ok = p.sendICMPPing()
 	}
-	return p.sendICMPPing()
+
+	if !ok {
+		// Log failures at most once per second to avoid flooding if it's a persistent issue
+		log.Printf("[PINGER] Probe to %s:%d failed", p.host, p.port)
+	}
+	return rtt, ok
 }
 
 // sendTCPPing measures latency via a TCP handshake.
@@ -84,7 +92,7 @@ func (p *Pinger) sendTCPPing() (time.Duration, bool) {
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
 	if err != nil {
-		// Log rarely to avoid spamming if the port is closed or network is down
+		log.Printf("[PINGER] TCP dial error to %s: %v", address, err)
 		return 0, false
 	}
 	elapsed := time.Since(start)
@@ -106,12 +114,13 @@ func (p *Pinger) sendICMPPing() (time.Duration, bool) {
 
 	err = pinger.Run()
 	if err != nil {
-		log.Printf("[PINGER] Ping failed: %v", err)
+		log.Printf("[PINGER] ICMP Run failed for %s: %v", p.host, err)
 		return 0, false
 	}
 
 	stats := pinger.Statistics()
 	if stats.PacketsRecv == 0 {
+		log.Printf("[PINGER] ICMP Packet Loss for %s", p.host)
 		return 0, false
 	}
 	return stats.AvgRtt, true
