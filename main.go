@@ -67,6 +67,8 @@ func main() {
 	log.Printf("  Interface: %s  Class: %s  URLs: %d rotating", TargetInterface, TargetClass, len(PingURLs))
 	if ProxyAddress != "" {
 		log.Printf("  Proxy: %s", ProxyAddress)
+	} else {
+		log.Print("No ProxyAddress set")
 	}
 	log.Printf("  Rate range: %d–%d kbps  Start: %d kbps", MinRate, MaxRate, StartRate)
 	log.Println("═══════════════════════════════════════════════════")

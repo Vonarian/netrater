@@ -7,7 +7,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
+ExecStartPre=/usr/local/bin/setup-qos.sh
 ExecStart=/usr/local/bin/netrater
+ExecStop=/usr/local/bin/teardown-qos.sh
 Restart=on-failure
 RestartSec=5
 
