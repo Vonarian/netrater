@@ -35,7 +35,7 @@ var PingURLs = []string{
 
 const (
 	// Pinger timing
-	PingInterval = 750 * time.Millisecond
+	PingInterval = 1250 * time.Millisecond
 	WindowSize   = 5 // rolling avg window (5 × 750ms = 3.75s)
 	// Controller timing
 	// Removed ControlInterval because evaluation is now sequential with pinging

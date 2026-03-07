@@ -53,8 +53,8 @@ func (c *Controller) Evaluate() {
 	prevRate := c.currentRate
 	now := time.Now()
 
-	// Cooldown: don't throttle more than once every 2 seconds
-	cooldown := 2 * time.Second
+	// Cooldown: don't throttle more than every 2000ms (sequential evaluation)
+	cooldown := 2000 * time.Millisecond
 	target := c.maxAcceptableMs
 
 	switch {

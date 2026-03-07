@@ -137,7 +137,7 @@ func (p *Pinger) measure() (time.Duration, bool) {
 		targetURL = parsed.String()
 	}
 
-	req, err := http.NewRequest("GET", targetURL, nil)
+	req, err := http.NewRequest("HEAD", targetURL, nil)
 	if err != nil {
 		return 0, false
 	}
@@ -147,7 +147,7 @@ func (p *Pinger) measure() (time.Duration, bool) {
 	start := time.Now()
 	resp, err := p.client.Do(req)
 	if err != nil {
-		log.Printf("[PINGER] HTTP Probe to %s failed: %v", uStr, err)
+		log.Printf("[PINGER][ERROR] HTTP Probe to %s failed: %v", uStr, err)
 		return 0, false
 	}
 	defer resp.Body.Close()
