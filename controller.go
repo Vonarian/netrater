@@ -14,6 +14,7 @@ type Controller struct {
 	maxRate         int     // kbps
 	maxAdditiveInc  float64 // max kbps additive increase
 	maxAcceptableMs float64 // absolute latency ceiling
+	throttleFactor  float64 // softens bandwidth cuts (1.0 = full, 0.5 = 50%)
 	lastThrottle    time.Time
 	maintainCount   int
 }
@@ -24,6 +25,7 @@ func NewController(
 	startRate, minRate, maxRate int,
 	maxAdditiveInc float64,
 	maxAcceptableMs float64,
+	throttleFactor float64,
 ) *Controller {
 	return &Controller{
 		metrics:         metrics,
@@ -33,6 +35,7 @@ func NewController(
 		maxRate:         maxRate,
 		maxAdditiveInc:  maxAdditiveInc,
 		maxAcceptableMs: maxAcceptableMs,
+		throttleFactor:  throttleFactor,
 		maintainCount:   0,
 	}
 }
@@ -61,17 +64,21 @@ func (c *Controller) Evaluate() {
 			return
 		}
 
-		// Dynamic proportional decrease multiplier (e.g. target=675, avg=700 -> mult=0.964 -> ~3.6% cut)
-		// More extreme spikes (e.g. timeouts=2000) will result in sharper cuts (~66%).
-		multiplier := target / avgMs
+		// Dynamic proportional decrease multiplier (e.g. target=900, avg=1000 -> reduction=10% -> factor 0.5 -> 5% cut)
+		// multiplier = 1.0 - (1.0 - (target / avgMs)) * factor
+		rawMultiplier := target / avgMs
+		reduction := 1.0 - rawMultiplier
+		appliedReduction := reduction * c.throttleFactor
+		multiplier := 1.0 - appliedReduction
+
 		newRate := int(float64(c.currentRate) * multiplier)
 		newRate = clamp(newRate, c.minRate, c.maxRate)
 
 		if newRate < c.currentRate {
 			// Calculate percentage above target limit
 			excessPct := ((avgMs - target) / target) * 100
-			log.Printf("[THROTTLE] Ping spiked to %.1fms (%.1f%% above %vms limit). Cutting bandwidth from %d to %d kbps (mult: %.3f).",
-				avgMs, excessPct, target, c.currentRate, newRate, multiplier)
+			log.Printf("[THROTTLE] Ping spiked to %.1fms (%.1f%% above %vms limit). Cutting bandwidth from %d to %d kbps (raw_mult: %.3f, adjusted_mult: %.3f).",
+				avgMs, excessPct, target, c.currentRate, newRate, rawMultiplier, multiplier)
 			c.lastThrottle = now
 		} else {
 			log.Printf("[THROTTLE] Ping spiked to %.1fms, but already at minimum %d kbps.", avgMs, c.currentRate)

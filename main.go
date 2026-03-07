@@ -44,10 +44,13 @@ const (
 
 	// Absolute ceiling for latency. If average RTT exceeds this, we dynamically throttle.
 	// If it is below this, we dynamically increase.
-	MaxAcceptableRTTMs = 675.0
+	MaxAcceptableRTTMs = 900.0
 
 	// Maximum kbps to add per evaluation (approached when latency is near 0ms)
 	MaxAdditiveIncrease = 250.0
+
+	// Aggressiveness of bandwidth reduction when latency exceeds target (1.0 = aggressive, 0.1 = very mild)
+	ThrottleFactor = 0.5
 
 	// Simulated RTT for a failed probe (e.g., timeout) to dynamically penalize loss
 	TimeoutPenaltyMs = 2000.0
@@ -81,6 +84,7 @@ func main() {
 		metrics, executor,
 		StartRate, MinRate, MaxRate,
 		MaxAdditiveIncrease, MaxAcceptableRTTMs,
+		ThrottleFactor,
 	)
 
 	// Stop channel for graceful shutdown
