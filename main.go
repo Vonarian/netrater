@@ -19,15 +19,16 @@ const (
 	ProxyAddress = "socks5://127.0.0.1:10808"
 
 	// Bandwidth bounds (kbps)
-	MinRate   = 1000
-	MaxRate   = 7000
-	StartRate = 3500
+	MinRate    = 1500
+	MaxRate    = 8196
+	MaxVIPRate = 12288
+	StartRate  = 4000
 )
 
 // Rotating Generate 204 URLs for realistic latency measurement
 var PingURLs = []string{
 	"http://connectivitycheck.gstatic.com/generate_204",
-	"http://clients3.google.com/generate_204",
+	"http://google.com/generate_204",
 	"http://www.gstatic.com/generate_204",
 	"http://connectivitycheck.android.com/generate_204",
 	"http://play.googleapis.com/generate_204",
@@ -36,7 +37,7 @@ var PingURLs = []string{
 const (
 	// Pinger timing
 	PingInterval = 1250 * time.Millisecond
-	WindowSize   = 5 // rolling avg window (5 × 750ms = 3.75s)
+	WindowSize   = 4 // rolling avg window (4 × 1250ms = 5s)
 	// Controller timing
 	// Removed ControlInterval because evaluation is now sequential with pinging
 

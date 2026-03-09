@@ -34,9 +34,12 @@ func (e *Executor) Setup() error {
 }
 
 // Apply changes the tiered HTB class rates to the given base value in kbps.
-// It applies baseRate * 2 to the parent and VIP ceil, and baseRate to Bulk ceil.
+// It applies baseRate * 3 to the parent and VIP ceil, and baseRate to Bulk ceil.
 func (e *Executor) Apply(baseRate int) error {
-	parentRate := baseRate * 2
+	parentRate := baseRate * 3
+	if parentRate > MaxVIPRate {
+		parentRate = MaxVIPRate
+	}
 
 	// 1. Update Parent Class (1:1) - The shared pipe for throttled traffic
 	if err := e.replaceClass("1:1", "1:", parentRate, parentRate); err != nil {
